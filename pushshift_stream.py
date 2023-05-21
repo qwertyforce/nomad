@@ -7,37 +7,35 @@ import io
 import json
 from tqdm import tqdm
 from time import sleep
+import numpy as  np
 import concurrent.futures
-MAX_WORKERS = 32
+import traceback       
+import flickrapi
+import zmq
 
+flickr_api_key = u''
+flickr_api_secret = u''
+flickr = flickrapi.FlickrAPI(flickr_api_key, flickr_api_secret, format='parsed-json')
+
+IMG_DOWNLOAD_MAX_WORKERS = 32
 IMG_PATH = "./test/"
 JSON_PATH  = "./test_json/"
+EXTENSION={"image/jpg":".jpg","image/jpeg":".jpg","image/png":".png"}
+ALLOWED_MIME=["image/jpg","image/jpeg", "image/png"]
+IMGUR_CLIENT_ID=""
+POST_TO_SCENERY = False
+IMPORT_IMAGES_BOT_PASSWORD = "123"
+
+context = zmq.Context()
+print("Connecting to anti_sus server…")
+socket = context.socket(zmq.REQ)
+socket.connect("tcp://localhost:7777")
 
 try:
     os.mkdir(IMG_PATH)
     os.mkdir(JSON_PATH)
 except:
-    print("yeah")
-
-import numpy as  np
-
-POST_TO_SCENERY = False
-
-import flickrapi
-api_key = u'api_key'
-api_secret = u'api_secret'
-
-flickr = flickrapi.FlickrAPI(api_key, api_secret, format='parsed-json')
-
-EXTENSION={"image/jpg":".jpg","image/jpeg":".jpg","image/png":".png"}
-ALLOWED_MIME=["image/jpg","image/jpeg", "image/png"]
-imgur_client_id="imgur_client_id"
-
-import zmq
-context = zmq.Context()
-print("Connecting to anti_sus server…")
-socket = context.socket(zmq.REQ)
-socket.connect("tcp://localhost:7777")
+    print("folders exist")
 
 def b58decode(s):
     alphabet = '123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ'
@@ -61,7 +59,7 @@ def get_mime(url):
         return False
 
 def check_fit(images):
-    socket.send(images.tobytes())
+    socket.send(images,copy=False) # non-copying numpy send
     message = socket.recv()
     return list(np.frombuffer(message,dtype=np.int32))
 
@@ -73,7 +71,6 @@ def download(url, file_name, ext, post_idx):
                 ext=EXTENSION[file_mime]
             else:
                 return
-            
         full_file_name=IMG_PATH+file_name+ext
         if os.path.isfile(full_file_name):
             # print("File exist")
@@ -88,9 +85,9 @@ def download(url, file_name, ext, post_idx):
             return False
         if im.mode != 'RGB':
             im = im.convert('RGB')
-        return (post_idx, np.array(im.resize((448,448),Image.Resampling.LANCZOS)), full_file_name, response.content)
+        return (post_idx, np.array(im.resize((512,512),Image.Resampling.LANCZOS)), full_file_name, response.content)
     except Exception as e:
-        print(e)
+        traceback.print_exc()
         print("error "+ url)
 
 def handle_imgur(post, imgur_link):
@@ -99,7 +96,7 @@ def handle_imgur(post, imgur_link):
         if album_id:
             print(f"downloading album {imgur_link}")
             url = f"https://api.imgur.com/3/album/{album_id}/images"
-            headers = {'Authorization': f'Client-ID {imgur_client_id}'}
+            headers = {'Authorization': f'Client-ID {IMGUR_CLIENT_ID}'}
             response = get(url, headers=headers,timeout=5)
             data = response.json()
             post__img_urls = []
@@ -109,13 +106,19 @@ def handle_imgur(post, imgur_link):
 
             return post__img_urls
     except Exception as e:
-        print(e)
+        traceback.print_exc()
         print("error "+ imgur_link)
         return []
 
+def flick_get_best_photo(photo_id):
+    sizes = flickr.photos_getSizes(photo_id=photo_id)
+    img = sizes["sizes"]["size"][-1]  # get best available version
+    if img["media"] == "photo":
+        return img["source"]
+    return None
 
-def get_post__img_urls(posts):
-    post__img_urls=[]
+def get_post_img_url_post_id_ext(posts):
+    post_img_url_post_id_ext=[]
     for post in tqdm(posts):
         if post["over_18"] or post["is_video"] or post["removed_by_category"]:
             continue
@@ -131,31 +134,29 @@ def get_post__img_urls(posts):
                     if file_mime in ALLOWED_MIME:
                         file_ext=EXTENSION[file_mime]
                         img_url = f"https://i.redd.it/{img_id}{file_ext}"
-                        post__img_urls.append((post, img_url, f"{post['id']}_reddit_{img_id}", file_ext))
+                        post_img_url_post_id_ext.append((post, img_url, f"{post['id']}_reddit_{img_id}", file_ext))
         else:
-
             if "imgur.com/a/" in post["url"] or "imgur.com/gallery" in post["url"]:
-                post__img_urls.extend(handle_imgur(post,post["url"].replace("gallery","a")))
+                post_img_url_post_id_ext.extend(handle_imgur(post,post["url"].replace("gallery","a")))
 
             elif "://imgur.com/" in post["url"] and not "." in post["url"]:
                 img_url = post["url"] + ".jpg"
-                post__img_urls.append((post,img_url, post["id"], None))
-                
+                post_img_url_post_id_ext.append((post,img_url, post["id"], None))
+            
             elif "flic.kr/p/" in post["url"]:
                 try:
                     start_id = post["url"].find("flic.kr/p/") + 10
                     end_id = post["url"].find("/",start_id)
                     if end_id == -1:
-                        id = b58decode(post["url"][start_id:])
+                        photo_id = b58decode(post["url"][start_id:])
                     else:
-                        id = b58decode(post["url"][start_id:end_id])
-                    id = str(id)
-                    sizes = flickr.photos_getSizes(photo_id=id)
-                    img = sizes["sizes"]["size"][-1]
-                    if img["media"] == "photo":
-                        img_url = img["source"]
-                        post__img_urls.append((post,img_url, post["id"], None))
+                        photo_id = b58decode(post["url"][start_id:end_id])
+                    photo_id = str(photo_id)
+                    img_url = flick_get_best_photo(photo_id)
+                    if img_url:
+                        post_img_url_post_id_ext.append((post,img_url, post["id"], None))
                 except:
+                    traceback.print_exc()
                     print("flic.kr/p/", post["url"])
 
             elif "flickr.com/photos/" in post["url"]:
@@ -163,16 +164,14 @@ def get_post__img_urls(posts):
                     start_id = post["url"].find("/",post["url"].index("/photos/")+8)+1
                     end_id = post["url"].find("/",start_id)
                     if end_id == -1:
-                        id = post["url"][start_id:]
+                        photo_id = post["url"][start_id:]
                     else:
-                        id = post["url"][start_id:end_id]
-
-                    sizes = flickr.photos_getSizes(photo_id=id)
-                    img = sizes["sizes"]["size"][-1]
-                    if img["media"] == "photo":
-                        img_url = img["source"]
-                        post__img_urls.append((post,img_url, post["id"],None))
+                        photo_id = post["url"][start_id:end_id]
+                    img_url = flick_get_best_photo(photo_id)
+                    if img_url:
+                        post_img_url_post_id_ext.append((post,img_url, post["id"], None))
                 except Exception as e:
+                    traceback.print_exc()
                     print("flickr error ",post["url"])
 
             elif "staticflickr.com" in post["url"]:
@@ -184,49 +183,66 @@ def get_post__img_urls(posts):
                     if id.find("_") != -1:
                         id = id[:id.find("_")]
                     sizes = flickr.photos_getSizes(photo_id=id)
-                    img = sizes["sizes"]["size"][-1]
-                    # print(img)
+                    img = sizes["sizes"]["size"][-1]   # get best available version
                     if img["media"] == "photo":
                         img_url = img["source"]
-                        post__img_urls.append((post, img_url, post["id"], None))
+                        post_img_url_post_id_ext.append((post, img_url, post["id"], None))
                 except Exception as e: 
-                    print(e)
+                    traceback.print_exc()
                     print("staticflickr error ",post["url"])
                     print("trying get flickr image directly",post["url"])
-                    post__img_urls.append((post, post["url"], post["id"], None))
+                    post_img_url_post_id_ext.append((post, post["url"], post["id"], None))
             else:
-                post__img_urls.append((post, post["url"], post["id"], None))
-    return post__img_urls
+                post_img_url_post_id_ext.append((post, post["url"], post["id"], None))
+    return post_img_url_post_id_ext
 
-
+def clean_post_obj(post_obj):
+    list_of_properties = ["selftext",
+    "title",
+    "media_metadata",
+    "id",
+    "author",
+    "permalink",
+    "url",
+    "created_utc",
+    "subreddit",
+    "over_18",
+    "is_video",
+    "removed_by_category",
+    "crosspost_parent_list"]
+    new_obj={}
+    for property in list_of_properties:
+        if property in post_obj:
+            new_obj[property] = post_obj[property]
+    return new_obj
+    
 urls_broken = []
 def scrape_reddit():
-    after_epoch =0
+    # after_epoch=""
     empty_results=0
-    itertation_num = 0
     while True:
-        itertation_num+=1
+        sleep(10)
         print('===iteration===')
         print(dt.datetime.now())
-        data = get(f"https://api.pushshift.io/reddit/submission/search?sort=created_utc&order=desc&filter=id,author,url,title,score,permalink,over_18,is_video,removed_by_category,crosspost_parent_list,media_metadata,gallery_data,selftext,created_utc&limit=1000&after={after_epoch}")
-        posts = data.json()["data"]
-        
-        if len(posts) == 0:
-            print(f"after = {after_epoch}")
+        data = get(f"https://www.reddit.com/r/all/new.json?sort=new&limit=100", headers={"User-Agent": """Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36"""})
+        data=data.json()
+       
+        if len(data["data"]["children"]) == 0:
+            print('len(data["data"]["children"]) == 0')
             sleep(20)
             empty_results+=1
         else:
-            after_epoch = int(dt.datetime.now().timestamp())
             empty_results=0
 
         if empty_results==50:
             break
+        
+        posts = [clean_post_obj(obj["data"]) for obj in data["data"]["children"]]
+        post_img_url_post_id_ext = get_post_img_url_post_id_ext(posts)
 
-        post__img_urls = get_post__img_urls(posts)
-        post_idx__img = []
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            future_to_url = (executor.submit(download, obj[1],obj[2],obj[3],post_idx) for post_idx, obj in enumerate(post__img_urls))
+        post_idx_512img_filename_full_img= []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=IMG_DOWNLOAD_MAX_WORKERS) as executor:
+            future_to_url = (executor.submit(download, obj[1],obj[2],obj[3],post_idx) for post_idx, obj in enumerate(post_img_url_post_id_ext))
             for future in tqdm(concurrent.futures.as_completed(future_to_url)):
                 try:
                     data = future.result()
@@ -234,30 +250,30 @@ def scrape_reddit():
                     print(exc)
                 finally:
                     if data:
-                        post_idx__img.append(data)            
+                        post_idx_512img_filename_full_img.append(data)            
         
-        batch_size = 256
-        for start_pos in tqdm(range(0,len(post_idx__img),batch_size)):
-            batch = post_idx__img[start_pos:start_pos + batch_size]
+        batch_size = 64
+        for start_pos in tqdm(range(0,len(post_idx_512img_filename_full_img),batch_size)):
+            batch = post_idx_512img_filename_full_img[start_pos:start_pos + batch_size]
             img_batch= np.array([x[1] for x in batch])
             print(img_batch.shape)
-            print(img_batch.dtype)
             check_fit_res = check_fit(img_batch)
             print(check_fit_res)
             for in_batch_idx in check_fit_res:
                 post_idx = batch[in_batch_idx][0]
-                post_data = post__img_urls[post_idx]
-                source_url = "https://reddit.com" + post_data[0]["permalink"]
+                post_data = post_img_url_post_id_ext[post_idx][0]
+                source_url = "https://reddit.com" + post_data["permalink"]     #/r/.....
+                print(source_url)
                 with open(batch[in_batch_idx][2], "wb") as file:
                     if POST_TO_SCENERY:
-                        post('http://127.0.0.1/import_image', files=dict(image=batch[in_batch_idx][3]), data=dict(source_url=source_url,tags='["from_nomad"]',import_images_bot_password="123"))
+                        post('http://127.0.0.1/import_image', files=dict(image=batch[in_batch_idx][3]), data=dict(source_url=source_url,tags='["from_nomad"]',import_images_bot_password=IMPORT_IMAGES_BOT_PASSWORD))
                     file.write(batch[in_batch_idx][3])
 
             uniq_post_idxs = set([batch[in_batch_idx][0] for in_batch_idx in check_fit_res])
             for post_idx in uniq_post_idxs:
-                post_data = post__img_urls[post_idx]
-                with open(JSON_PATH+post_data[0]["id"]+".json", "w") as file:
-                    file.write(json.dumps(post_data[0]))
+                post_data = post_img_url_post_id_ext[post_idx][0]
+                with open(JSON_PATH+post_data["id"]+".json", "w") as file:
+                    file.write(json.dumps(post_data))
 scrape_reddit()
 
 
