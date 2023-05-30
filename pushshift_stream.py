@@ -76,8 +76,10 @@ def download(url, file_name, ext, post_idx):
             # print("File exist")
             return False
         
-        response = get(url,timeout=5)
+        response = get(url,timeout=5, headers={"User-Agent": """Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36"""})
+
         fake_file = io.BytesIO(response.content)
+        
         im = Image.open(fake_file)
         width, height = im.size
         if width*height < 1280 * 1024:
@@ -122,11 +124,13 @@ def get_post_img_url_post_id_ext(posts):
     for post in tqdm(posts):
         if post["over_18"] or post["is_video"] or post["removed_by_category"]:
             continue
-        if ("media_metadata" in post and post["media_metadata"]) or ("crosspost_parent_list" in post and post["crosspost_parent_list"] and "media_metadata" in post["crosspost_parent_list"][0]):
+        if ("media_metadata" in post and post["media_metadata"]) or ("crosspost_parent_list" in post and post["crosspost_parent_list"] and "media_metadata" in post["crosspost_parent_list"][0] and post["crosspost_parent_list"][0]['media_metadata']):
             if "media_metadata" in post and post["media_metadata"]:
                 media_metadata_obj = post["media_metadata"].values()
             elif post["crosspost_parent_list"][0]['media_metadata']:
                 media_metadata_obj = post["crosspost_parent_list"][0]['media_metadata'].values()
+            # else: #??????????????? how media_metadata_obj can be not assigned?
+            #     continue
             for obj in media_metadata_obj:
                 if "e" in obj and obj["e"] == "Image":
                     file_mime = obj["m"]
@@ -221,7 +225,7 @@ def scrape_reddit():
     # after_epoch=""
     empty_results=0
     while True:
-        sleep(10)
+        sleep(5)
         print('===iteration===')
         print(dt.datetime.now())
         data = get(f"https://www.reddit.com/r/all/new.json?sort=new&limit=100", headers={"User-Agent": """Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36"""})
