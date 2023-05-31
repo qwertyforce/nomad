@@ -82,8 +82,7 @@ def download(url, file_name, ext, post_idx):
         
         im = Image.open(fake_file)
         width, height = im.size
-        if width*height < 1280 * 1024:
-            # print("size too small")
+        if (width*height < 1280 * 1024) or (width/height > 3) or (height/width > 2):
             return False
         if im.mode != 'RGB':
             im = im.convert('RGB')
