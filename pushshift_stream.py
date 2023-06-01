@@ -76,7 +76,7 @@ def download(url, file_name, ext, post_idx):
             # print("File exist")
             return False
         
-        response = get(url,timeout=5, headers={"User-Agent": """Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36"""})
+        response = get(url,timeout=5, headers={"User-Agent": """Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36"""})
 
         fake_file = io.BytesIO(response.content)
         
