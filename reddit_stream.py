@@ -25,6 +25,8 @@ ALLOWED_MIME=["image/jpg","image/jpeg", "image/png"]
 IMGUR_CLIENT_ID=""
 POST_TO_SCENERY = False
 IMPORT_IMAGES_BOT_PASSWORD = "123"
+REQUEST_TIMEOUT = 120000 # ms   2 minutes
+REQUEST_RETRIES = 5
 
 context = zmq.Context()
 print("Connecting to anti_sus server…")
@@ -59,9 +61,36 @@ def get_mime(url):
         return False
 
 def check_fit(images):
-    socket.send(images,copy=False) # non-copying numpy send
-    message = socket.recv()
-    return list(np.frombuffer(message,dtype=np.int32))
+    global socket
+    retries_left = REQUEST_RETRIES
+    socket.send(images,copy=False)
+    print("sent main")
+    while True:
+        if (socket.poll(REQUEST_TIMEOUT) & zmq.POLLIN) != 0:
+            print("waiting for answer")
+            message = socket.recv()
+            return list(np.frombuffer(message,dtype=np.int32))
+            # else:
+            #     logging.error("Malformed reply from server: %s", reply)
+            #     continue
+
+        retries_left -= 1
+        print("No response from server")
+        # Socket is confused. Close and remove it.
+        socket.setsockopt(zmq.LINGER, 0)
+        socket.close()
+
+        if retries_left == 0:
+            print("Server seems to be offline, abandoning")
+            # sys.exit()
+            return []
+
+        print(f"Reconnecting to server... retries_left: {retries_left}")
+        # Create new connection
+        socket = context.socket(zmq.REQ)
+        socket.connect("tcp://localhost:7777")
+        print("Resending images")
+        socket.send(images,copy=False)
 
 def download(url, file_name, ext, post_idx):
     try:
@@ -76,6 +105,9 @@ def download(url, file_name, ext, post_idx):
             # print("File exist")
             return False
         
+        if "imgur.com" in url: # if ip banned by imgur, use this
+            url="https://proxy.duckduckgo.com/iu/?u="+url
+
         response = get(url,timeout=5, headers={"User-Agent": """Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36"""})
 
         fake_file = io.BytesIO(response.content)
@@ -244,16 +276,20 @@ def scrape_reddit():
         post_img_url_post_id_ext = get_post_img_url_post_id_ext(posts)
 
         post_idx_512img_filename_full_img= []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=IMG_DOWNLOAD_MAX_WORKERS) as executor:
-            future_to_url = (executor.submit(download, obj[1],obj[2],obj[3],post_idx) for post_idx, obj in enumerate(post_img_url_post_id_ext))
-            for future in tqdm(concurrent.futures.as_completed(future_to_url)):
-                try:
-                    data = future.result()
-                except Exception as exc:
-                    print(exc)
-                finally:
-                    if data:
-                        post_idx_512img_filename_full_img.append(data)            
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=IMG_DOWNLOAD_MAX_WORKERS) as executor:
+                future_to_url = (executor.submit(download, obj[1],obj[2],obj[3],post_idx) for post_idx, obj in enumerate(post_img_url_post_id_ext))
+                for future in tqdm(concurrent.futures.as_completed(future_to_url,timeout=20)):
+                    try:
+                        data = future.result()
+                    except Exception as exc:
+                        print(exc)
+                    finally:
+                        if data:
+                            post_idx_512img_filename_full_img.append(data)            
+        except:
+            pass
+         
         
         batch_size = 64
         for start_pos in tqdm(range(0,len(post_idx_512img_filename_full_img),batch_size)):
