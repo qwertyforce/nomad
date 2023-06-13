@@ -80,15 +80,14 @@ def check_fit(images):
         socket.setsockopt(zmq.LINGER, 0)
         socket.close()
 
-        if retries_left == 0:
-            print("Server seems to be offline, abandoning")
-            # sys.exit()
-            return []
-
         print(f"Reconnecting to server... retries_left: {retries_left}")
         # Create new connection
         socket = context.socket(zmq.REQ)
         socket.connect("tcp://localhost:7777")
+        if retries_left == 0:
+            print("Server seems to be offline, abandoning")
+            # sys.exit()
+            return []
         print("Resending images")
         socket.send(images,copy=False)
 
