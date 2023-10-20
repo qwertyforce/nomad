@@ -59,37 +59,35 @@ def get_mime(url):
         return False
     except:
         return False
+    
+def reconnect():
+    global socket
+    socket.setsockopt(zmq.LINGER, 0)
+    socket.close()
+    # Create new connection
+    socket = context.socket(zmq.REQ)
+    socket.connect("tcp://localhost:7777")
 
 def check_fit(images):
     global socket
-    retries_left = REQUEST_RETRIES
-    socket.send(images,copy=False)
-    print("sent main")
-    while True:
-        if (socket.poll(REQUEST_TIMEOUT) & zmq.POLLIN) != 0:
-            print("waiting for answer")
-            message = socket.recv()
-            return list(np.frombuffer(message,dtype=np.int32))
-            # else:
-            #     logging.error("Malformed reply from server: %s", reply)
-            #     continue
-
-        retries_left -= 1
-        print("No response from server")
-        # Socket is confused. Close and remove it.
-        socket.setsockopt(zmq.LINGER, 0)
-        socket.close()
-
-        print(f"Reconnecting to server... retries_left: {retries_left}")
-        # Create new connection
-        socket = context.socket(zmq.REQ)
-        socket.connect("tcp://localhost:7777")
-        if retries_left == 0:
-            print("Server seems to be offline, abandoning")
-            # sys.exit()
-            return []
-        print("Resending images")
-        socket.send(images,copy=False)
+    for retries_left in range(REQUEST_RETRIES):
+        try:
+            print("sent main")
+            socket.send(images,copy=False)
+            if (socket.poll(REQUEST_TIMEOUT) & zmq.POLLIN) != 0:
+                print("waiting for answer")
+                message = socket.recv()
+                return list(np.frombuffer(message,dtype=np.int32))
+            else:
+                raise Exception
+        except:
+            print("No response from server")
+            print(f"Reconnecting to server... retries_left: {REQUEST_RETRIES - retries_left}")
+            reconnect()
+ 
+    print("Server seems to be offline, abandoning")
+     # sys.exit()
+    return []
 
 def download(url, file_name, ext, post_idx):
     try:
@@ -305,7 +303,7 @@ def scrape_reddit():
                 with open(batch[in_batch_idx][2], "wb") as file:
                     if POST_TO_SCENERY:
                         post('http://127.0.0.1/import_image', files=dict(image=batch[in_batch_idx][3]), data=dict(source_url=source_url,tags='["from_nomad"]',import_images_bot_password=IMPORT_IMAGES_BOT_PASSWORD))
-                    file.write(batch[in_batch_idx][3])
+                    file.write(batch[in_batch_idx][3])  # saves image to file
 
             uniq_post_idxs = set([batch[in_batch_idx][0] for in_batch_idx in check_fit_res])
             for post_idx in uniq_post_idxs:
